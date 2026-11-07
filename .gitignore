@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+*.old.exe
+
+# Runtime configuration & diagnostic logs
+settings.json
+idle_wake.log
+*.log
+
+# Editor & OS files
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
