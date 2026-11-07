@@ -68,6 +68,7 @@ struct AppState {
     screensaver: ScreensaverEngine,
     last_tick_ms: u64,
     ui_diag_refresh_counter: u32,
+    tray_hicon: HICON,
     tray_available: bool,
 
     preview_idle_dim: bool,
@@ -190,6 +191,9 @@ impl AppState {
 
         // 5. Refresh Live Idle & Wakeup Diagnostics card in UI (~4 Hz when settings window is open)
         self.ui_diag_refresh_counter = self.ui_diag_refresh_counter.wrapping_add(1);
+        if !self.tray_available && self.ui_diag_refresh_counter % 125 == 0 {
+            self.tray_available = unsafe { add_tray_icon(self.main_hwnd, self.tray_hicon) };
+        }
         if self.ui_diag_refresh_counter % 30 == 0 {
             unsafe {
                 if IsWindowVisible(self.main_hwnd) != 0 && IsIconic(self.main_hwnd) == 0 {
@@ -334,6 +338,7 @@ unsafe extern "system" fn settings_wndproc(
                 screensaver: ScreensaverEngine::new(),
                 last_tick_ms: GetTickCount64(),
                 ui_diag_refresh_counter: 0,
+                tray_hicon: icon_small,
                 tray_available,
                 preview_idle_dim: false,
                 preview_idle_start_ms: 0,
@@ -657,15 +662,8 @@ fn main() {
         }
 
         let start_minimized = std::env::args().any(|a| a == "--minimized" || a == "--startup");
-        let mut tray_avail = false;
-        STATE.with(|cell| {
-            if let Some(ref st) = *cell.borrow() {
-                tray_avail = st.tray_available;
-            }
-        });
-
-        if start_minimized && tray_avail {
-            // When launched automatically at Windows login (--minimized), run quietly in the system tray!
+        if start_minimized {
+            // When launched automatically at Windows login (--minimized), always start hidden in the system tray!
             ShowWindow(hwnd, SW_HIDE);
         } else {
             // Force window to the front of the Z-order above the IDE even if Windows Foreground Lock is active
