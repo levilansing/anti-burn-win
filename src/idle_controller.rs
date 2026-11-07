@@ -427,7 +427,14 @@ impl IdleController {
         // Update live human-readable status summary for the UI diagnostics bar
         self.state_summary = if screensaver_active {
             let s2_span = cfg.screensaver_stage2_secs.saturating_sub(cfg.screensaver_stage1_secs);
-            if ss_elapsed_secs >= (s2_span as f32) {
+            if cfg.screensaver_turn_off_mins > 0
+                && ss_elapsed_secs >= (cfg.screensaver_turn_off_mins as f32) * 60.0
+            {
+                format!(
+                    "DISPLAY SLEEP & PURE BLACKOUT (Idle: {:.0}s | Raw OS: {:.0}s)",
+                    self.effective_idle_secs, self.raw_idle_secs
+                )
+            } else if ss_elapsed_secs >= (s2_span as f32) {
                 format!(
                     "SCREENSAVER STAGE 2 (Idle: {:.0}s | Raw OS: {:.0}s)",
                     self.effective_idle_secs, self.raw_idle_secs

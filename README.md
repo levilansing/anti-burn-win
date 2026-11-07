@@ -21,9 +21,10 @@
 - **Anti-Jiggler & Wake Diagnostics:** Ignores synthetic `0px` `SendInput` wakes from background apps and ignores audio output so music or background videos never prevent idle dimming. Includes a live **Idle & Wakeup Diagnostics** panel and persistent `idle_wake.log`.
 
 ### 4. Coupled Flow-Field + Metaballs OLED Screensaver
-- **Two-Stage OLED Protection:**
-  - **Stage 1:** Renders a smooth coupled curl-noise flow-field particle simulation with organic metaball glow over a true `#000000` OLED black background (with configurable metaball visibility and solid vs. dark-center metaball modes). Particles flow freely off-screen and curve naturally back onto the canvas without piling up on screen edges.
-  - **Stage 2:** Transitions to a pure `#000000` black screen (zero pixel emission) after the Stage 2 timeout.
+- **Multi-Stage OLED Protection:**
+  - **Stage 1:** Renders a smooth coupled curl-noise flow-field particle simulation with organic metaball glow over an initially semi-transparent dark backdrop (with configurable metaball visibility and solid vs. dark-center metaball modes). Particles flow freely off-screen and curve naturally back onto the canvas without piling up on screen edges.
+  - **Stage 2 (100% Opaque Backdrop):** Smoothly fades the backdrop behind the particles and metaballs to `100%` opaque `#000000` black.
+  - **Display Sleep & Pure Blackout (15-Min Increments):** After a configurable duration (`Never`, `15`, `30`, `45`, ..., `120 min`), fades out all particles and metaballs to a guaranteed **100% pure `#000000` black screen** (zero pixel emission and zero CPU simulation cost) AND sends a hardware display power-off command (`WM_SYSCOMMAND` / `SC_MONITORPOWER = 2`) to put the monitor to sleep.
 - **Bottom-Left Hot Corner:** Hold the mouse cursor in the bottom-left `12 × 12` pixel corner of the primary monitor for **1.0 second** to launch the screensaver on demand, fading straight to a 100% opaque `#000000` black backdrop.
 - **Always Hidden Cursor:** Ensures the mouse cursor is never visible over the running screensaver.
 

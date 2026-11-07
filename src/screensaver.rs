@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::win_apis::{get_primary_monitor_rect, to_wstring};
+use crate::win_apis::{append_idle_log, get_primary_monitor_rect, to_wstring};
 use std::f32::consts::{PI, TAU};
 use std::ptr;
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
@@ -11,11 +11,11 @@ use winapi::um::wingdi::{
 };
 use winapi::um::winuser::{
     BeginPaint, CreateWindowExW, DefWindowProcW, DestroyWindow, EndPaint, GetDC, GetWindow,
-    RegisterClassW, ReleaseDC, SetCursor, SetLayeredWindowAttributes, SetWindowPos, ShowCursor,
-    ShowWindow, GW_HWNDPREV, HWND_TOPMOST, LWA_ALPHA, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND,
-    WM_PAINT, WM_SETCURSOR, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    PostMessageW, RegisterClassW, ReleaseDC, SetCursor, SetLayeredWindowAttributes, SetWindowPos,
+    ShowCursor, ShowWindow, GW_HWNDPREV, HWND_BROADCAST, HWND_TOPMOST, LWA_ALPHA, PAINTSTRUCT,
+    SC_MONITORPOWER, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE,
+    SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_PAINT, WM_SETCURSOR, WM_SYSCOMMAND, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 unsafe extern "system" fn screensaver_wndproc(
@@ -75,6 +75,8 @@ pub struct ScreensaverEngine {
     visible: bool,
     cursor_hidden: bool,
     fade_in: f32,
+    blackout_fade: f32,
+    monitor_power_off_sent: bool,
     sim_time: f32,
     frame_accum: f32,
     frame_counter: u32,
@@ -168,6 +170,8 @@ impl ScreensaverEngine {
                 visible: false,
                 cursor_hidden: false,
                 fade_in: 0.0,
+                blackout_fade: 0.0,
+                monitor_power_off_sent: false,
                 sim_time: 0.0,
                 frame_accum: 0.0,
                 frame_counter: 0,
@@ -266,10 +270,13 @@ impl ScreensaverEngine {
         cfg: &AppConfig,
         active: bool,
         ss_elapsed_secs: f32,
+        force_opaque_bg: bool,
         dt_secs: f32,
     ) {
         unsafe {
             if !active {
+                self.blackout_fade = 0.0;
+                self.monitor_power_off_sent = false;
                 if !self.visible {
                     if self.cursor_hidden {
                         ShowCursor(1);
@@ -291,6 +298,26 @@ impl ScreensaverEngine {
             } else {
                 // Smooth ~3.5-second fade-in
                 self.fade_in = (self.fade_in + dt_secs * 0.28).min(1.0);
+
+                // Check if "Display Sleep & Pure Black" timeout has been reached
+                let turn_off_active = cfg.screensaver_turn_off_mins > 0
+                    && ss_elapsed_secs >= (cfg.screensaver_turn_off_mins as f32) * 60.0;
+                if turn_off_active {
+                    self.blackout_fade = (self.blackout_fade + dt_secs * 0.35).min(1.0);
+                    if self.blackout_fade >= 0.999 && !self.monitor_power_off_sent {
+                        self.monitor_power_off_sent = true;
+                        append_idle_log(&format!(
+                            "Screensaver Pure Blackout & Display Sleep engaged (after {} min)",
+                            cfg.screensaver_turn_off_mins
+                        ));
+                        // Attempt to put the monitor into hardware power-save / sleep mode (SC_MONITORPOWER = 2)
+                        PostMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+                        DefWindowProcW(self.hwnd, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+                    }
+                } else {
+                    self.blackout_fade = (self.blackout_fade - dt_secs * 1.5).max(0.0);
+                    self.monitor_power_off_sent = false;
+                }
             }
 
             // Throttle screensaver physics & StretchDIBits to 60 FPS (16ms) even when main loop runs at 125Hz (8ms)
@@ -310,25 +337,30 @@ impl ScreensaverEngine {
             self.sim_time += step_dt;
             self.frame_counter = self.frame_counter.wrapping_add(1);
 
-            // Run 3 fine physics & sub-pixel anti-aliased particle splat sub-steps per frame
-            // so particle trajectories have tiny step sizes and form silky continuous lines!
-            let substeps = 3;
-            let sub_dt = step_dt / (substeps as f32);
-            let vibrancy = cfg.screensaver_vibrancy.clamp(0.1, 1.0);
+            // Only step particle/metaball physics when not in 100% pure blackout mode!
+            if self.blackout_fade < 0.999 {
+                let substeps = 3;
+                let sub_dt = step_dt / (substeps as f32);
+                let vibrancy = cfg.screensaver_vibrancy.clamp(0.1, 1.0) * (1.0 - self.blackout_fade);
 
-            let decay = 0.91f32;
-            for px in &mut self.accum_rgb {
-                px[0] *= decay;
-                px[1] *= decay;
-                px[2] *= decay;
-            }
+                let decay = 0.91f32 * (1.0 - self.blackout_fade * 0.15);
+                for px in &mut self.accum_rgb {
+                    px[0] *= decay;
+                    px[1] *= decay;
+                    px[2] *= decay;
+                }
 
-            for _ in 0..substeps {
-                self.step_physics_and_splat(sub_dt, vibrancy);
+                for _ in 0..substeps {
+                    self.step_physics_and_splat(sub_dt, vibrancy);
+                }
+            } else {
+                for px in &mut self.accum_rgb {
+                    *px = [0.0, 0.0, 0.0];
+                }
             }
 
             // Render & present via hardware StretchDIBits + LWA_ALPHA
-            self.render_frame(cfg, ss_elapsed_secs);
+            self.render_frame(cfg, ss_elapsed_secs, force_opaque_bg);
         }
     }
 
@@ -594,16 +626,26 @@ impl ScreensaverEngine {
         }
     }
 
-    unsafe fn render_frame(&mut self, cfg: &AppConfig, ss_elapsed_secs: f32) {
+    unsafe fn render_frame(
+        &mut self,
+        cfg: &AppConfig,
+        ss_elapsed_secs: f32,
+        force_opaque_bg: bool,
+    ) {
         let bw = self.buf_w;
         let bh = self.buf_h;
-        let vibrancy = cfg.screensaver_vibrancy.clamp(0.1, 1.0);
+        let alive_mult = (1.0 - self.blackout_fade).clamp(0.0, 1.0);
+        let vibrancy = cfg.screensaver_vibrancy.clamp(0.1, 1.0) * alive_mult;
 
         let total_span = (cfg
             .screensaver_stage2_secs
             .saturating_sub(cfg.screensaver_stage1_secs))
         .max(60) as f32;
-        let progressive_darkening = (ss_elapsed_secs / total_span).clamp(0.0, 1.0);
+        let progressive_darkening = if force_opaque_bg || self.blackout_fade > 0.001 {
+            1.0
+        } else {
+            (ss_elapsed_secs / total_span).clamp(0.0, 1.0)
+        };
         let window_alpha_f = (cfg.screensaver_stage1_opacity
             + (1.0 - cfg.screensaver_stage1_opacity) * progressive_darkening)
             * self.fade_in;
@@ -612,92 +654,97 @@ impl ScreensaverEngine {
             return;
         }
 
-        let show_metaballs = cfg.screensaver_show_metaballs;
-        let solid_metaballs = cfg.screensaver_solid_metaballs;
+        if self.blackout_fade >= 0.999 {
+            // Pure #000000 blackout: zero pixel emission across the entire screen
+            self.pixel_buf.fill(0xFF000000);
+        } else {
+            let show_metaballs = cfg.screensaver_show_metaballs && alive_mult > 0.001;
+            let solid_metaballs = cfg.screensaver_solid_metaballs;
 
-        let mut mb_eval = [([0.0f32; 2], 0.0f32, [0.0f32; 3]); 16];
-        let n_mb = self.metaballs.len().min(16);
-        if show_metaballs {
-            for (i, mb) in self.metaballs.iter().take(n_mb).enumerate() {
-                let (cr, cg, cb) = hsv_to_rgb(mb.hue, 0.95, 1.0);
-                mb_eval[i] = ([mb.x, mb.y], mb.radius * mb.radius, [cr, cg, cb]);
+            let mut mb_eval = [([0.0f32; 2], 0.0f32, [0.0f32; 3]); 16];
+            let n_mb = self.metaballs.len().min(16);
+            if show_metaballs {
+                for (i, mb) in self.metaballs.iter().take(n_mb).enumerate() {
+                    let (cr, cg, cb) = hsv_to_rgb(mb.hue, 0.95, 1.0);
+                    mb_eval[i] = ([mb.x, mb.y], mb.radius * mb.radius, [cr, cg, cb]);
+                }
             }
-        }
 
-        let frame_seed = (self.frame_counter & 63) as f32;
+            let frame_seed = (self.frame_counter & 63) as f32;
 
-        // Evaluate only the tiny 512x216 (`110,592` pixels) buffer on the CPU!
-        for y in 0..bh {
-            let fy = y as f32;
-            let row_offset = y * bw;
-            for x in 0..bw {
-                let fx = x as f32;
+            // Evaluate only the tiny 512x216 (`110,592` pixels) buffer on the CPU!
+            for y in 0..bh {
+                let fy = y as f32;
+                let row_offset = y * bw;
+                for x in 0..bw {
+                    let fx = x as f32;
 
-                let mut pr = self.accum_rgb[row_offset + x][0];
-                let mut pg = self.accum_rgb[row_offset + x][1];
-                let mut pb = self.accum_rgb[row_offset + x][2];
+                    let mut pr = self.accum_rgb[row_offset + x][0] * alive_mult;
+                    let mut pg = self.accum_rgb[row_offset + x][1] * alive_mult;
+                    let mut pb = self.accum_rgb[row_offset + x][2] * alive_mult;
 
-                if show_metaballs {
-                    let mut field = 0.0f32;
-                    let mut mr = 0.0f32;
-                    let mut mg = 0.0f32;
-                    let mut mb_col = 0.0f32;
+                    if show_metaballs {
+                        let mut field = 0.0f32;
+                        let mut mr = 0.0f32;
+                        let mut mg = 0.0f32;
+                        let mut mb_col = 0.0f32;
 
-                    for &(pos, r2, col) in mb_eval.iter().take(n_mb) {
-                        let dx = fx - pos[0];
-                        let dy = fy - pos[1];
-                        let contrib = r2 / (dx * dx + dy * dy + 20.0);
-                        field += contrib;
-                        mr += col[0] * contrib;
-                        mg += col[1] * contrib;
-                        mb_col += col[2] * contrib;
+                        for &(pos, r2, col) in mb_eval.iter().take(n_mb) {
+                            let dx = fx - pos[0];
+                            let dy = fy - pos[1];
+                            let contrib = r2 / (dx * dx + dy * dy + 20.0);
+                            field += contrib;
+                            mr += col[0] * contrib;
+                            mg += col[1] * contrib;
+                            mb_col += col[2] * contrib;
+                        }
+
+                        let inv_f = 1.0 / (field + 1e-5);
+                        let norm_r = mr * inv_f;
+                        let norm_g = mg * inv_f;
+                        let norm_b = mb_col * inv_f;
+
+                        // If `solid_metaballs` is enabled, fill the interior (`field >= 1.02`) solidly with
+                        // the bright rim color instead of letting `rim` decay to a dark center!
+                        let rim = if solid_metaballs && field >= 1.02 {
+                            1.0
+                        } else {
+                            let diff = (field - 1.02) * 2.1;
+                            (-diff * diff).exp() * (field * 1.5).min(1.0)
+                        };
+                        let aura = (field * 0.24).min(0.32) * (1.0 - (-field * 2.5).exp());
+                        let meta_lum = (rim * 0.62 + aura) * vibrancy;
+
+                        pr = (pr + norm_r * meta_lum).min(1.0);
+                        pg = (pg + norm_g * meta_lum).min(1.0);
+                        pb = (pb + norm_b * meta_lum).min(1.0);
                     }
 
-                    let inv_f = 1.0 / (field + 1e-5);
-                    let norm_r = mr * inv_f;
-                    let norm_g = mg * inv_f;
-                    let norm_b = mb_col * inv_f;
+                    // Interleaved Gradient Noise dithering so dark color transitions have zero banding
+                    let ign = ((52.9829189
+                        * ((0.06711056 * fx + 0.00583715 * fy + frame_seed * 0.17).fract()))
+                    .fract())
+                        - 0.5;
+                    let dither = ign * 1.5;
 
-                    // If `solid_metaballs` is enabled, fill the interior (`field >= 1.02`) solidly with
-                    // the bright rim color instead of letting `rim` decay to a dark center!
-                    let rim = if solid_metaballs && field >= 1.02 {
-                        1.0
+                    let r_u8 = if pr > 0.0015 {
+                        (pr * 255.0 + dither).round().clamp(0.0, 255.0) as u32
                     } else {
-                        let diff = (field - 1.02) * 2.1;
-                        (-diff * diff).exp() * (field * 1.5).min(1.0)
+                        0
                     };
-                    let aura = (field * 0.24).min(0.32) * (1.0 - (-field * 2.5).exp());
-                    let meta_lum = (rim * 0.62 + aura) * vibrancy;
+                    let g_u8 = if pg > 0.0015 {
+                        (pg * 255.0 + dither).round().clamp(0.0, 255.0) as u32
+                    } else {
+                        0
+                    };
+                    let b_u8 = if pb > 0.0015 {
+                        (pb * 255.0 + dither).round().clamp(0.0, 255.0) as u32
+                    } else {
+                        0
+                    };
 
-                    pr = (pr + norm_r * meta_lum).min(1.0);
-                    pg = (pg + norm_g * meta_lum).min(1.0);
-                    pb = (pb + norm_b * meta_lum).min(1.0);
+                    self.pixel_buf[row_offset + x] = 0xFF000000 | (r_u8 << 16) | (g_u8 << 8) | b_u8;
                 }
-
-                // Interleaved Gradient Noise dithering so dark color transitions have zero banding
-                let ign = ((52.9829189
-                    * ((0.06711056 * fx + 0.00583715 * fy + frame_seed * 0.17).fract()))
-                .fract())
-                    - 0.5;
-                let dither = ign * 1.5;
-
-                let r_u8 = if pr > 0.0015 {
-                    (pr * 255.0 + dither).round().clamp(0.0, 255.0) as u32
-                } else {
-                    0
-                };
-                let g_u8 = if pg > 0.0015 {
-                    (pg * 255.0 + dither).round().clamp(0.0, 255.0) as u32
-                } else {
-                    0
-                };
-                let b_u8 = if pb > 0.0015 {
-                    (pb * 255.0 + dither).round().clamp(0.0, 255.0) as u32
-                } else {
-                    0
-                };
-
-                self.pixel_buf[row_offset + x] = 0xFF000000 | (r_u8 << 16) | (g_u8 << 8) | b_u8;
             }
         }
 

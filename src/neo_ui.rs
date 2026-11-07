@@ -38,6 +38,7 @@ pub enum ControlId {
     SsStage1Mins,
     SsStage1BgBrightnessPct,
     SsStage2Mins,
+    SsTurnOffMins,
     SsVibrancyPct,
     SsShowMetaballs,
     SsSolidMetaballs,
@@ -165,7 +166,7 @@ impl NeoUi {
             rect: RECT { left: 40, top: 526, right: 560, bottom: 554 },
         });
 
-        // Card 4: Coupled Metaball & Flow Field Screensaver (y: 574..774)
+        // Card 4: Coupled Metaball & Flow Field Screensaver (y: 574..876)
         controls.push(NeoControl {
             id: ControlId::ScreensaverEnabled,
             kind: ControlKind::Toggle,
@@ -187,46 +188,52 @@ impl NeoUi {
         controls.push(NeoControl {
             id: ControlId::SsStage2Mins,
             kind: ControlKind::Slider { min: 5, max: 60, step: 5 },
-            label: "Full Blackout (#000000) At",
+            label: "100% Opaque Backdrop At",
             rect: RECT { left: 40, top: 706, right: 560, bottom: 734 },
+        });
+        controls.push(NeoControl {
+            id: ControlId::SsTurnOffMins,
+            kind: ControlKind::Slider { min: 0, max: 120, step: 15 },
+            label: "Display Sleep & Pure Black",
+            rect: RECT { left: 40, top: 740, right: 560, bottom: 768 },
         });
         controls.push(NeoControl {
             id: ControlId::SsVibrancyPct,
             kind: ControlKind::Slider { min: 20, max: 100, step: 5 },
             label: "Pattern Color Vibrancy",
-            rect: RECT { left: 40, top: 740, right: 560, bottom: 768 },
+            rect: RECT { left: 40, top: 774, right: 560, bottom: 802 },
         });
         controls.push(NeoControl {
             id: ControlId::SsShowMetaballs,
             kind: ControlKind::Toggle,
             label: "Show Metaball Glow Background (Off = Particles Only)",
-            rect: RECT { left: 40, top: 774, right: 560, bottom: 802 },
+            rect: RECT { left: 40, top: 808, right: 560, bottom: 836 },
         });
         controls.push(NeoControl {
             id: ControlId::SsSolidMetaballs,
             kind: ControlKind::Toggle,
             label: "Solid Colored Metaballs (Instead of Dark Centers)",
-            rect: RECT { left: 40, top: 808, right: 560, bottom: 836 },
+            rect: RECT { left: 40, top: 842, right: 560, bottom: 870 },
         });
 
-        // Bottom Neomorphic Action Buttons (y: 956..996)
+        // Bottom Neomorphic Action Buttons (y: 990..1030)
         controls.push(NeoControl {
             id: ControlId::BtnPreviewIdleDim,
             kind: ControlKind::Button,
             label: "Test Idle Dim",
-            rect: RECT { left: 24, top: 956, right: 204, bottom: 996 },
+            rect: RECT { left: 24, top: 990, right: 204, bottom: 1030 },
         });
         controls.push(NeoControl {
             id: ControlId::BtnPreviewScreensaver,
             kind: ControlKind::Button,
             label: "Test Screensaver",
-            rect: RECT { left: 218, top: 956, right: 402, bottom: 996 },
+            rect: RECT { left: 218, top: 990, right: 402, bottom: 1030 },
         });
         controls.push(NeoControl {
             id: ControlId::BtnMinimizeToTray,
             kind: ControlKind::Button,
             label: "Hide to Tray",
-            rect: RECT { left: 416, top: 956, right: 576, bottom: 996 },
+            rect: RECT { left: 416, top: 990, right: 576, bottom: 1030 },
         });
 
         Self {
@@ -271,6 +278,7 @@ impl NeoUi {
             ControlId::SsStage2Mins => {
                 ((cfg.screensaver_stage2_secs as f32) / 60.0).round().max(5.0) as i32
             }
+            ControlId::SsTurnOffMins => cfg.screensaver_turn_off_mins as i32,
             ControlId::SsVibrancyPct => (cfg.screensaver_vibrancy * 100.0).round() as i32,
             ControlId::SsShowMetaballs => i32::from(cfg.screensaver_show_metaballs),
             ControlId::SsSolidMetaballs => i32::from(cfg.screensaver_solid_metaballs),
@@ -289,6 +297,13 @@ impl NeoUi {
             ControlId::ActiveFadeMs => format!("{} ms", val),
             ControlId::IdleTimeoutMins | ControlId::SsStage1Mins | ControlId::SsStage2Mins => {
                 format!("{} min", val)
+            }
+            ControlId::SsTurnOffMins => {
+                if val <= 0 {
+                    String::from("Never")
+                } else {
+                    format!("{} min", val)
+                }
             }
             _ => String::new(),
         }
@@ -314,6 +329,7 @@ impl NeoUi {
                 cfg.screensaver_stage1_opacity = (1.0 - (val as f32) / 100.0).clamp(0.10, 0.95)
             }
             ControlId::SsStage2Mins => cfg.screensaver_stage2_secs = (val.max(5) as u32) * 60,
+            ControlId::SsTurnOffMins => cfg.screensaver_turn_off_mins = val.max(0) as u32,
             ControlId::SsVibrancyPct => cfg.screensaver_vibrancy = (val as f32) / 100.0,
             ControlId::SsShowMetaballs => cfg.screensaver_show_metaballs = val != 0,
             ControlId::SsSolidMetaballs => cfg.screensaver_solid_metaballs = val != 0,
@@ -471,8 +487,8 @@ impl NeoUi {
                 RECT { left: 24, top: 58, right: 576, bottom: 202 },
                 RECT { left: 24, top: 214, right: 576, bottom: 382 },
                 RECT { left: 24, top: 394, right: 576, bottom: 562 },
-                RECT { left: 24, top: 574, right: 576, bottom: 842 },
-                RECT { left: 24, top: 854, right: 576, bottom: 944 },
+                RECT { left: 24, top: 574, right: 576, bottom: 876 },
+                RECT { left: 24, top: 888, right: 576, bottom: 978 },
             ];
 
             for crect in &cards {
@@ -592,8 +608,8 @@ impl NeoUi {
             (RECT { left: 24, top: 58, right: 576, bottom: 202 }, "TASKBAR & START MENU FILTER"),
             (RECT { left: 24, top: 214, right: 576, bottom: 382 }, "INACTIVE WINDOW BACKDROP & CROSSFADE"),
             (RECT { left: 24, top: 394, right: 576, bottom: 562 }, "GLOBAL IDLE DIMMING (HDR & SDR)"),
-            (RECT { left: 24, top: 574, right: 576, bottom: 842 }, "COUPLED FLOW FIELD & METABALL SCREENSAVER"),
-            (RECT { left: 24, top: 854, right: 576, bottom: 944 }, "LIVE IDLE & WAKEUP DIAGNOSTICS (idle_wake.log)"),
+            (RECT { left: 24, top: 574, right: 576, bottom: 876 }, "COUPLED FLOW FIELD & METABALL SCREENSAVER"),
+            (RECT { left: 24, top: 888, right: 576, bottom: 978 }, "LIVE IDLE & WAKEUP DIAGNOSTICS (idle_wake.log)"),
         ];
 
         SelectObject(mem_dc, font_sec as *mut _);
@@ -619,7 +635,7 @@ impl NeoUi {
         draw_text(
             mem_dc,
             idle_state_summary,
-            RECT { left: 40, top: 880, right: 560, bottom: 900 },
+            RECT { left: 40, top: 914, right: 560, bottom: 934 },
             DT_LEFT | DT_VCENTER | DT_SINGLELINE,
         );
 
@@ -627,7 +643,7 @@ impl NeoUi {
         draw_text(
             mem_dc,
             &format!("Last Wake: {}", last_wake_event),
-            RECT { left: 40, top: 900, right: 560, bottom: 920 },
+            RECT { left: 40, top: 934, right: 560, bottom: 954 },
             DT_LEFT | DT_VCENTER | DT_SINGLELINE,
         );
 
@@ -635,7 +651,7 @@ impl NeoUi {
         draw_text(
             mem_dc,
             &format!("Prev Event: {}", prev_wake_event),
-            RECT { left: 40, top: 920, right: 560, bottom: 938 },
+            RECT { left: 40, top: 954, right: 560, bottom: 972 },
             DT_LEFT | DT_VCENTER | DT_SINGLELINE,
         );
         DeleteObject(font_diag as *mut _);

@@ -148,17 +148,7 @@ impl AppState {
         }
 
         let preview_ss_elapsed_secs = if self.preview_screensaver {
-            let elapsed = (now.saturating_sub(self.preview_ss_start_ms) as f32) / 1000.0;
-            if self.preview_ss_full_black {
-                let s2_span = self
-                    .cfg
-                    .screensaver_stage2_secs
-                    .saturating_sub(self.cfg.screensaver_stage1_secs)
-                    .max(60) as f32;
-                elapsed + s2_span
-            } else {
-                elapsed
-            }
+            (now.saturating_sub(self.preview_ss_start_ms) as f32) / 1000.0
         } else {
             self.preview_ss_full_black = false;
             0.0
@@ -190,8 +180,13 @@ impl AppState {
             .update(&self.cfg, &self.detector, dt_secs, ss_visible);
 
         // 4. Update & Render Coupled Flow Field + Metaballs Screensaver OVER TOP of all active dimmers
-        self.screensaver
-            .update_and_render(&self.cfg, ss_active, ss_elapsed_secs, dt_secs);
+        self.screensaver.update_and_render(
+            &self.cfg,
+            ss_active,
+            ss_elapsed_secs,
+            self.preview_ss_full_black,
+            dt_secs,
+        );
 
         // 5. Refresh Live Idle & Wakeup Diagnostics card in UI (~4 Hz when settings window is open)
         self.ui_diag_refresh_counter = self.ui_diag_refresh_counter.wrapping_add(1);
@@ -200,9 +195,9 @@ impl AppState {
                 if IsWindowVisible(self.main_hwnd) != 0 && IsIconic(self.main_hwnd) == 0 {
                     let diag_rect = RECT {
                         left: 24,
-                        top: 854,
+                        top: 888,
                         right: 576,
-                        bottom: 944,
+                        bottom: 978,
                     };
                     InvalidateRect(self.main_hwnd, &diag_rect, 0);
                 }
@@ -637,7 +632,7 @@ fn main() {
             left: 0,
             top: 0,
             right: 600,
-            bottom: 1012,
+            bottom: 1046,
         };
         AdjustWindowRectEx(&mut win_rect, style, 0, 0);
 

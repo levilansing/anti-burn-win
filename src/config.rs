@@ -6,6 +6,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_turn_off_mins() -> u32 {
+    30
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
     /// Launch Anti-Burn OLED Guard automatically when Windows starts
@@ -45,10 +49,13 @@ pub struct AppConfig {
     pub screensaver_stage1_secs: u32,
     /// Background opacity during Stage 1 screensaver (default 0.70 = 30% background brightness)
     pub screensaver_stage1_opacity: f32,
-    /// Idle timeout before fading to Stage 2 (100% pure black #000000) in seconds (default 900s = 15 mins)
+    /// Idle timeout before fading to Stage 2 (100% opaque backdrop) in seconds (default 900s = 15 mins)
     pub screensaver_stage2_secs: u32,
     /// Fade duration from Stage 1 to Stage 2 opaque black in seconds (default 120s)
     pub screensaver_stage2_fade_secs: f32,
+    /// Minutes of screensaver runtime before turning screen 100% pure black & putting display to sleep (0 = Never, increments of 15m, default 30m)
+    #[serde(default = "default_turn_off_mins")]
+    pub screensaver_turn_off_mins: u32,
     /// Visual brightness multiplier of metaballs & flow particles (0.1 to 1.0, default 0.65)
     pub screensaver_vibrancy: f32,
     /// Number of flow field particles coupled to metaballs (default 1800)
@@ -87,6 +94,7 @@ impl Default for AppConfig {
             screensaver_stage1_opacity: 0.70,
             screensaver_stage2_secs: 900, // 15 minutes
             screensaver_stage2_fade_secs: 120.0,
+            screensaver_turn_off_mins: 30, // 30 minutes (15-min increments)
             screensaver_vibrancy: 0.65,
             screensaver_particle_count: 1800,
             screensaver_metaball_count: 7,
