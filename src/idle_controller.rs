@@ -398,9 +398,13 @@ impl IdleController {
             (false, 0.0)
         };
 
-        // Determine target global idle dim amount
+        // Determine target global idle dim amount:
+        // Whenever the screensaver is active (including when started from the hot corner or preview),
+        // also apply the configured Idle Dimming if `idle_dim_enabled` is on!
         let should_idle_dim = preview_idle_dim
-            || (cfg.idle_dim_enabled && self.effective_idle_secs >= (cfg.idle_timeout_secs as f32));
+            || (cfg.idle_dim_enabled
+                && (screensaver_active
+                    || self.effective_idle_secs >= (cfg.idle_timeout_secs as f32)));
         let target_dim = if should_idle_dim {
             cfg.idle_dim_amount.clamp(0.0, 0.95)
         } else {
