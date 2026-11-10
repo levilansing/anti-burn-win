@@ -236,17 +236,17 @@ impl IdleController {
         }
         if !self.fallback_visible {
             ShowWindow(self.fallback_overlay_hwnd, SW_SHOWNOACTIVATE);
+            SetWindowPos(
+                self.fallback_overlay_hwnd,
+                HWND_TOPMOST,
+                vrect.left,
+                vrect.top,
+                self.dib_w,
+                self.dib_h,
+                SWP_NOACTIVATE,
+            );
             self.fallback_visible = true;
         }
-        SetWindowPos(
-            self.fallback_overlay_hwnd,
-            HWND_TOPMOST,
-            vrect.left,
-            vrect.top,
-            self.dib_w,
-            self.dib_h,
-            SWP_NOACTIVATE,
-        );
     }
 
     fn record_wake_event(&mut self, desc: String) {
@@ -484,12 +484,12 @@ impl IdleController {
         // Hide the bright hardware cursor plane whenever Idle Dimming is active,
         // and restore it on the very first frame that the user wakes the screen.
         if should_idle_dim {
-            unsafe {
-                if !self.cursor_hidden {
+            if !self.cursor_hidden {
+                unsafe {
                     ShowCursor(0);
-                    self.cursor_hidden = true;
+                    SetCursor(ptr::null_mut());
                 }
-                SetCursor(ptr::null_mut());
+                self.cursor_hidden = true;
             }
         } else if self.cursor_hidden {
             unsafe {

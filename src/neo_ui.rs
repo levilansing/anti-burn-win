@@ -193,8 +193,8 @@ impl NeoUi {
         });
         controls.push(NeoControl {
             id: ControlId::SsTurnOffMins,
-            kind: ControlKind::Slider { min: 0, max: 120, step: 15 },
-            label: "Display Sleep & Pure Black",
+            kind: ControlKind::Slider { min: 0, max: 120, step: 5 },
+            label: "Turn Off Monitor After",
             rect: RECT { left: 40, top: 740, right: 560, bottom: 768 },
         });
         controls.push(NeoControl {
@@ -245,7 +245,7 @@ impl NeoUi {
 
     pub fn slider_track_rect(ctrl_rect: RECT) -> RECT {
         RECT {
-            left: ctrl_rect.left + 215,
+            left: ctrl_rect.left + 234,
             top: ctrl_rect.top + 10,
             right: ctrl_rect.right - 78,
             bottom: ctrl_rect.top + 18,
@@ -688,7 +688,7 @@ impl NeoUi {
                         RECT {
                             left: ctrl.rect.left,
                             top: ctrl.rect.top,
-                            right: ctrl.rect.left + 208,
+                            right: ctrl.rect.left + 228,
                             bottom: ctrl.rect.bottom,
                         },
                         DT_LEFT | DT_VCENTER | DT_SINGLELINE,

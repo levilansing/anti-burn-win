@@ -11,11 +11,12 @@ use winapi::um::wingdi::{
 };
 use winapi::um::winuser::{
     BeginPaint, CreateWindowExW, DefWindowProcW, DestroyWindow, EndPaint, GetDC, GetWindow,
-    PostMessageW, RegisterClassW, ReleaseDC, SetCursor, SetLayeredWindowAttributes, SetWindowPos,
-    ShowCursor, ShowWindow, GW_HWNDPREV, HWND_BROADCAST, HWND_TOPMOST, LWA_ALPHA, PAINTSTRUCT,
-    SC_MONITORPOWER, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE,
-    SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_PAINT, WM_SETCURSOR, WM_SYSCOMMAND, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    RegisterClassW, ReleaseDC, SendNotifyMessageW, SetCursor, SetLayeredWindowAttributes,
+    SetWindowPos, ShowCursor, ShowWindow, GW_HWNDPREV, HWND_BROADCAST, HWND_TOPMOST, LWA_ALPHA,
+    PAINTSTRUCT, SC_MONITORPOWER, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+    SWP_NOSENDCHANGING, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WM_ERASEBKGND, WM_PAINT,
+    WM_SETCURSOR, WM_SYSCOMMAND, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 unsafe extern "system" fn screensaver_wndproc(
@@ -76,7 +77,9 @@ pub struct ScreensaverEngine {
     cursor_hidden: bool,
     fade_in: f32,
     blackout_fade: f32,
-    monitor_power_off_sent: bool,
+    blackout_frame_presented: bool,
+    monitor_sleep_timer_secs: f32,
+    monitor_sleep_logged: bool,
     sim_time: f32,
     frame_accum: f32,
     frame_counter: u32,
@@ -171,7 +174,9 @@ impl ScreensaverEngine {
                 cursor_hidden: false,
                 fade_in: 0.0,
                 blackout_fade: 0.0,
-                monitor_power_off_sent: false,
+                blackout_frame_presented: false,
+                monitor_sleep_timer_secs: 0.0,
+                monitor_sleep_logged: false,
                 sim_time: 0.0,
                 frame_accum: 0.0,
                 frame_counter: 0,
@@ -197,6 +202,10 @@ impl ScreensaverEngine {
 
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    pub fn is_in_display_sleep(&self) -> bool {
+        self.visible && self.blackout_frame_presented
     }
 
     #[inline(always)]
@@ -272,11 +281,14 @@ impl ScreensaverEngine {
         ss_elapsed_secs: f32,
         force_opaque_bg: bool,
         dt_secs: f32,
+        main_hwnd: HWND,
     ) {
         unsafe {
             if !active {
                 self.blackout_fade = 0.0;
-                self.monitor_power_off_sent = false;
+                self.blackout_frame_presented = false;
+                self.monitor_sleep_timer_secs = 0.0;
+                self.monitor_sleep_logged = false;
                 if !self.visible {
                     if self.cursor_hidden {
                         ShowCursor(1);
@@ -299,24 +311,37 @@ impl ScreensaverEngine {
                 // Smooth ~3.5-second fade-in
                 self.fade_in = (self.fade_in + dt_secs * 0.28).min(1.0);
 
-                // Check if "Display Sleep & Pure Black" timeout has been reached
+                // Check if "Turn Off Monitor After" timeout has been reached
                 let turn_off_active = cfg.screensaver_turn_off_mins > 0
                     && ss_elapsed_secs >= (cfg.screensaver_turn_off_mins as f32) * 60.0;
                 if turn_off_active {
-                    self.blackout_fade = (self.blackout_fade + dt_secs * 0.35).min(1.0);
-                    if self.blackout_fade >= 0.999 && !self.monitor_power_off_sent {
-                        self.monitor_power_off_sent = true;
-                        append_idle_log(&format!(
-                            "Screensaver Pure Blackout & Display Sleep engaged (after {} min)",
-                            cfg.screensaver_turn_off_mins
-                        ));
-                        // Attempt to put the monitor into hardware power-save / sleep mode (SC_MONITORPOWER = 2)
-                        PostMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
-                        DefWindowProcW(self.hwnd, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+                    self.blackout_fade = (self.blackout_fade + dt_secs * 0.4).min(1.0);
+                    if self.blackout_frame_presented {
+                        // Once the pure #000000 black frame has been presented, completely cease all
+                        // 60 FPS GDI StretchDIBits/SetWindowPos/SetCursor calls so DWM is 100% idle,
+                        // then send SC_MONITORPOWER = 2 to put the physical monitor into hardware sleep!
+                        self.monitor_sleep_timer_secs += dt_secs;
+                        if self.monitor_sleep_timer_secs >= 1.0 {
+                            self.monitor_sleep_timer_secs = -24.0; // Re-assert every 25s if a fake 0px wake turns the panel on
+                            if !self.monitor_sleep_logged {
+                                self.monitor_sleep_logged = true;
+                                append_idle_log(&format!(
+                                    "Turn Off Monitor engaged (after {} min) — sending SC_MONITORPOWER=2",
+                                    cfg.screensaver_turn_off_mins
+                                ));
+                            }
+                            if !main_hwnd.is_null() {
+                                DefWindowProcW(main_hwnd, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+                            }
+                            SendNotifyMessageW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+                        }
+                        return;
                     }
                 } else {
                     self.blackout_fade = (self.blackout_fade - dt_secs * 1.5).max(0.0);
-                    self.monitor_power_off_sent = false;
+                    self.blackout_frame_presented = false;
+                    self.monitor_sleep_timer_secs = 0.0;
+                    self.monitor_sleep_logged = false;
                 }
             }
 
@@ -803,9 +828,13 @@ impl ScreensaverEngine {
 
         if !self.cursor_hidden {
             ShowCursor(0);
+            SetCursor(ptr::null_mut());
             self.cursor_hidden = true;
         }
-        SetCursor(ptr::null_mut());
+
+        if self.blackout_fade >= 0.999 && alpha_byte == 255 {
+            self.blackout_frame_presented = true;
+        }
     }
 }
 

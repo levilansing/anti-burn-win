@@ -167,18 +167,20 @@ impl AppState {
 
         let ss_visible = ss_active || self.screensaver.is_visible();
 
-        // 2. Update Active/Inactive Window Dimmer (125 FPS hardware crossfade + true Z-order backdrop behind active window)
-        let extra_hwnds = [
-            self.taskbar_dimmer.overlay_hwnd,
-            self.idle_controller.fallback_hwnd(),
-            self.screensaver.hwnd,
-        ];
-        self.window_dimmer
-            .update(&self.cfg, dt_secs, &extra_hwnds, ss_visible);
+        if !self.screensaver.is_in_display_sleep() {
+            // 2. Update Active/Inactive Window Dimmer (125 FPS hardware crossfade + true Z-order backdrop behind active window)
+            let extra_hwnds = [
+                self.taskbar_dimmer.overlay_hwnd,
+                self.idle_controller.fallback_hwnd(),
+                self.screensaver.hwnd,
+            ];
+            self.window_dimmer
+                .update(&self.cfg, dt_secs, &extra_hwnds, ss_visible);
 
-        // 3. Update Taskbar Dimmer (125 FPS hardware proximity fade)
-        self.taskbar_dimmer
-            .update(&self.cfg, &self.detector, dt_secs, ss_visible);
+            // 3. Update Taskbar Dimmer (125 FPS hardware proximity fade)
+            self.taskbar_dimmer
+                .update(&self.cfg, &self.detector, dt_secs, ss_visible);
+        }
 
         // 4. Update & Render Coupled Flow Field + Metaballs Screensaver OVER TOP of all active dimmers
         self.screensaver.update_and_render(
@@ -187,6 +189,7 @@ impl AppState {
             ss_elapsed_secs,
             self.preview_ss_full_black,
             dt_secs,
+            self.main_hwnd,
         );
 
         // 5. Refresh Live Idle & Wakeup Diagnostics card in UI (~4 Hz when settings window is open)
