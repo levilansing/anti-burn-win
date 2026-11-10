@@ -76,6 +76,7 @@ struct AppState {
 
     preview_screensaver: bool,
     preview_ss_full_black: bool,
+    preview_ss_turn_off_monitor: bool,
     preview_ss_start_ms: u64,
 
     hot_corner_hover_secs: f32,
@@ -96,7 +97,7 @@ impl AppState {
         let idle_ms = get_idle_duration_ms();
 
         // Check Bottom-Left Hot Corner: holding the cursor in the bottom-left 12x12 pixel corner
-        // of the primary monitor for 1.0 full second starts the screensaver!
+        // of the primary monitor for 1.0 full second either starts the screensaver or turns off the monitor!
         let mut cur = POINT { x: 0, y: 0 };
         unsafe {
             GetCursorPos(&mut cur);
@@ -116,8 +117,13 @@ impl AppState {
                     self.hot_corner_latched = true;
                     self.preview_screensaver = true;
                     self.preview_ss_full_black = true;
+                    self.preview_ss_turn_off_monitor = self.cfg.hot_corner_turn_off_monitor;
                     self.preview_ss_start_ms = now;
-                    append_idle_log("Screensaver started via Bottom-Left Hot Corner (1.0s hold, 100% black backdrop)");
+                    if self.cfg.hot_corner_turn_off_monitor {
+                        append_idle_log("Turn Off Monitor triggered via Bottom-Left Hot Corner (1.0s hold)");
+                    } else {
+                        append_idle_log("Screensaver started via Bottom-Left Hot Corner (1.0s hold, 100% black backdrop)");
+                    }
                 }
             }
         } else if outside_hot_corner_hysteresis {
@@ -152,6 +158,7 @@ impl AppState {
             (now.saturating_sub(self.preview_ss_start_ms) as f32) / 1000.0
         } else {
             self.preview_ss_full_black = false;
+            self.preview_ss_turn_off_monitor = false;
             0.0
         };
 
@@ -188,6 +195,7 @@ impl AppState {
             ss_active,
             ss_elapsed_secs,
             self.preview_ss_full_black,
+            self.preview_ss_turn_off_monitor,
             dt_secs,
             self.main_hwnd,
         );
@@ -202,9 +210,9 @@ impl AppState {
                 if IsWindowVisible(self.main_hwnd) != 0 && IsIconic(self.main_hwnd) == 0 {
                     let diag_rect = RECT {
                         left: 24,
-                        top: 888,
+                        top: 922,
                         right: 576,
-                        bottom: 978,
+                        bottom: 1012,
                     };
                     InvalidateRect(self.main_hwnd, &diag_rect, 0);
                 }
@@ -347,6 +355,7 @@ unsafe extern "system" fn settings_wndproc(
                 preview_idle_start_ms: 0,
                 preview_screensaver: false,
                 preview_ss_full_black: false,
+                preview_ss_turn_off_monitor: false,
                 preview_ss_start_ms: 0,
                 hot_corner_hover_secs: 0.0,
                 hot_corner_latched: false,
@@ -423,6 +432,7 @@ unsafe extern "system" fn settings_wndproc(
                                 st.ui.on_mouse_up();
                                 st.preview_screensaver = true;
                                 st.preview_ss_full_black = false;
+                                st.preview_ss_turn_off_monitor = false;
                                 st.preview_ss_start_ms = GetTickCount64();
                             }
                         });
@@ -505,6 +515,7 @@ unsafe extern "system" fn settings_wndproc(
                         if let Some(ref mut st) = *cell.borrow_mut() {
                             st.preview_screensaver = true;
                             st.preview_ss_full_black = false;
+                            st.preview_ss_turn_off_monitor = false;
                             st.preview_ss_start_ms = GetTickCount64();
                         }
                     });
@@ -640,7 +651,7 @@ fn main() {
             left: 0,
             top: 0,
             right: 600,
-            bottom: 1046,
+            bottom: 1080,
         };
         AdjustWindowRectEx(&mut win_rect, style, 0, 0);
 

@@ -280,6 +280,7 @@ impl ScreensaverEngine {
         active: bool,
         ss_elapsed_secs: f32,
         force_opaque_bg: bool,
+        force_turn_off_monitor: bool,
         dt_secs: f32,
         main_hwnd: HWND,
     ) {
@@ -308,27 +309,39 @@ impl ScreensaverEngine {
                     return;
                 }
             } else {
-                // Smooth ~3.5-second fade-in
-                self.fade_in = (self.fade_in + dt_secs * 0.28).min(1.0);
+                // Smooth fade-in (faster ~1.2s fade when directly turning off monitor via hot corner)
+                let fade_speed = if force_turn_off_monitor { 0.85 } else { 0.28 };
+                self.fade_in = (self.fade_in + dt_secs * fade_speed).min(1.0);
 
-                // Check if "Turn Off Monitor After" timeout has been reached
-                let turn_off_active = cfg.screensaver_turn_off_mins > 0
-                    && ss_elapsed_secs >= (cfg.screensaver_turn_off_mins as f32) * 60.0;
+                // Check if "Turn Off Monitor After" timeout has been reached or forced via Hot Corner
+                let turn_off_active = force_turn_off_monitor
+                    || (cfg.screensaver_turn_off_mins > 0
+                        && ss_elapsed_secs >= (cfg.screensaver_turn_off_mins as f32) * 60.0);
                 if turn_off_active {
-                    self.blackout_fade = (self.blackout_fade + dt_secs * 0.4).min(1.0);
+                    if force_turn_off_monitor {
+                        self.blackout_fade = 1.0;
+                    } else {
+                        self.blackout_fade = (self.blackout_fade + dt_secs * 0.4).min(1.0);
+                    }
                     if self.blackout_frame_presented {
                         // Once the pure #000000 black frame has been presented, completely cease all
                         // 60 FPS GDI StretchDIBits/SetWindowPos/SetCursor calls so DWM is 100% idle,
                         // then send SC_MONITORPOWER = 2 to put the physical monitor into hardware sleep!
                         self.monitor_sleep_timer_secs += dt_secs;
-                        if self.monitor_sleep_timer_secs >= 1.0 {
+                        if self.monitor_sleep_timer_secs >= 0.8 {
                             self.monitor_sleep_timer_secs = -24.0; // Re-assert every 25s if a fake 0px wake turns the panel on
                             if !self.monitor_sleep_logged {
                                 self.monitor_sleep_logged = true;
-                                append_idle_log(&format!(
-                                    "Turn Off Monitor engaged (after {} min) — sending SC_MONITORPOWER=2",
-                                    cfg.screensaver_turn_off_mins
-                                ));
+                                if force_turn_off_monitor {
+                                    append_idle_log(
+                                        "Turn Off Monitor engaged via Bottom-Left Hot Corner — sending SC_MONITORPOWER=2",
+                                    );
+                                } else {
+                                    append_idle_log(&format!(
+                                        "Turn Off Monitor engaged (after {} min) — sending SC_MONITORPOWER=2",
+                                        cfg.screensaver_turn_off_mins
+                                    ));
+                                }
                             }
                             if !main_hwnd.is_null() {
                                 DefWindowProcW(main_hwnd, WM_SYSCOMMAND, SC_MONITORPOWER, 2);

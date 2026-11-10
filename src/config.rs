@@ -68,6 +68,9 @@ pub struct AppConfig {
     /// Whether metaballs are filled with solid bright color instead of having dark centers
     #[serde(default = "default_true")]
     pub screensaver_solid_metaballs: bool,
+    /// When true, holding the cursor in the bottom-left hot corner turns the monitor off (pure black + SC_MONITORPOWER) instead of running the particle screensaver
+    #[serde(default)]
+    pub hot_corner_turn_off_monitor: bool,
 }
 
 impl Default for AppConfig {
@@ -94,12 +97,13 @@ impl Default for AppConfig {
             screensaver_stage1_opacity: 0.70,
             screensaver_stage2_secs: 900, // 15 minutes
             screensaver_stage2_fade_secs: 120.0,
-            screensaver_turn_off_mins: 30, // 30 minutes (15-min increments)
+            screensaver_turn_off_mins: 30, // 30 minutes (5-min increments)
             screensaver_vibrancy: 0.65,
             screensaver_particle_count: 1800,
             screensaver_metaball_count: 7,
             screensaver_show_metaballs: true,
             screensaver_solid_metaballs: true,
+            hot_corner_turn_off_monitor: false,
         }
     }
 }
