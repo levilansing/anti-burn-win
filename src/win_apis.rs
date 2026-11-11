@@ -13,7 +13,8 @@ use winapi::um::combaseapi::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL};
 use winapi::um::dwmapi::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
 use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryW};
 use winapi::um::mmdeviceapi::{
-    eCapture, eCommunications, IMMDevice, IMMDeviceEnumerator, CLSID_MMDeviceEnumerator,
+    eCapture, eCommunications, eConsole, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
+    CLSID_MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use winapi::um::objbase::COINIT_APARTMENTTHREADED;
 use winapi::um::sysinfoapi::GetTickCount64;
@@ -160,23 +161,35 @@ pub fn append_idle_log(event: &str) {
     let timestamp = format_local_time();
     let line = format!("[{}] {}\n", timestamp, event);
 
+    let trim_and_append = |path: &PathBuf| {
+        if let Ok(meta) = fs::metadata(path) {
+            if meta.len() > 256 * 1024 {
+                if let Ok(content) = fs::read_to_string(path) {
+                    let tail: Vec<&str> = content.lines().rev().take(400).collect();
+                    let mut trimmed = String::new();
+                    for l in tail.into_iter().rev() {
+                        trimmed.push_str(l);
+                        trimmed.push('\n');
+                    }
+                    let _ = fs::write(path, trimmed.as_bytes());
+                }
+            }
+        }
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = f.write_all(line.as_bytes());
+        }
+    };
+
     if let Some(appdata) = std::env::var_os("APPDATA") {
         let mut dir = PathBuf::from(appdata);
         dir.push("AntiBurnOLED");
         let _ = fs::create_dir_all(&dir);
         dir.push("idle_wake.log");
-        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&dir) {
-            let _ = f.write_all(line.as_bytes());
-        }
+        trim_and_append(&dir);
     }
 
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("idle_wake.log")
-    {
-        let _ = f.write_all(line.as_bytes());
-    }
+    let local_path = PathBuf::from("idle_wake.log");
+    trim_and_append(&local_path);
 }
 
 /// Requests 1ms timer resolution from the Windows kernel (`winmm.dll!timeBeginPeriod(1)`)
@@ -500,7 +513,7 @@ struct IAppVisibility {
     lpVtbl: *const IAppVisibilityVtbl,
 }
 
-// --- IAudioMeterInformation COM Interface for Video / Conference Call Detection ---
+// --- IAudioMeterInformation & IAudioSessionManager2 COM Interfaces for Microphone Call Detection ---
 
 const IID_IAUDIO_METER_INFORMATION: GUID = GUID {
     Data1: 0xC02216F6,
@@ -522,6 +535,111 @@ struct IAudioMeterInformation {
     lpVtbl: *const IAudioMeterInformationVtbl,
 }
 
+const IID_IAUDIO_SESSION_MANAGER2: GUID = GUID {
+    Data1: 0x77AA99A0,
+    Data2: 0x1BD6,
+    Data3: 0x484F,
+    Data4: [0x8B, 0xC7, 0x2C, 0x65, 0x4C, 0x9A, 0x9B, 0x6F],
+};
+
+const IID_IAUDIO_SESSION_CONTROL2: GUID = GUID {
+    Data1: 0xBFB7FF88,
+    Data2: 0x7239,
+    Data3: 0x4FC9,
+    Data4: [0x8F, 0xA2, 0x07, 0xC9, 0x50, 0xBE, 0x9C, 0x6D],
+};
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionManager2Vtbl {
+    parent: IUnknownVtbl,
+    GetAudioSessionControl: unsafe extern "system" fn(
+        *mut IAudioSessionManager2,
+        *const GUID,
+        DWORD,
+        *mut *mut IAudioSessionControl,
+    ) -> HRESULT,
+    GetSimpleAudioVolume: unsafe extern "system" fn(
+        *mut IAudioSessionManager2,
+        *const GUID,
+        DWORD,
+        *mut LPVOID,
+    ) -> HRESULT,
+    GetSessionEnumerator: unsafe extern "system" fn(
+        *mut IAudioSessionManager2,
+        *mut *mut IAudioSessionEnumerator,
+    ) -> HRESULT,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionManager2 {
+    lpVtbl: *const IAudioSessionManager2Vtbl,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionEnumeratorVtbl {
+    parent: IUnknownVtbl,
+    GetCount: unsafe extern "system" fn(*mut IAudioSessionEnumerator, *mut i32) -> HRESULT,
+    GetSession: unsafe extern "system" fn(
+        *mut IAudioSessionEnumerator,
+        i32,
+        *mut *mut IAudioSessionControl,
+    ) -> HRESULT,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionEnumerator {
+    lpVtbl: *const IAudioSessionEnumeratorVtbl,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionControlVtbl {
+    parent: IUnknownVtbl,
+    GetState: unsafe extern "system" fn(*mut IAudioSessionControl, *mut u32) -> HRESULT,
+    GetDisplayName: unsafe extern "system" fn(*mut IAudioSessionControl, *mut *mut u16) -> HRESULT,
+    SetDisplayName:
+        unsafe extern "system" fn(*mut IAudioSessionControl, *const u16, *const GUID) -> HRESULT,
+    GetIconPath: unsafe extern "system" fn(*mut IAudioSessionControl, *mut *mut u16) -> HRESULT,
+    SetIconPath:
+        unsafe extern "system" fn(*mut IAudioSessionControl, *const u16, *const GUID) -> HRESULT,
+    GetGroupingParam: unsafe extern "system" fn(*mut IAudioSessionControl, *mut GUID) -> HRESULT,
+    SetGroupingParam:
+        unsafe extern "system" fn(*mut IAudioSessionControl, *const GUID, *const GUID) -> HRESULT,
+    RegisterAudioSessionNotification:
+        unsafe extern "system" fn(*mut IAudioSessionControl, LPVOID) -> HRESULT,
+    UnregisterAudioSessionNotification:
+        unsafe extern "system" fn(*mut IAudioSessionControl, LPVOID) -> HRESULT,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionControl {
+    lpVtbl: *const IAudioSessionControlVtbl,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionControl2Vtbl {
+    base: IAudioSessionControlVtbl,
+    GetSessionIdentifier:
+        unsafe extern "system" fn(*mut IAudioSessionControl2, *mut *mut u16) -> HRESULT,
+    GetSessionInstanceIdentifier:
+        unsafe extern "system" fn(*mut IAudioSessionControl2, *mut *mut u16) -> HRESULT,
+    GetProcessId: unsafe extern "system" fn(*mut IAudioSessionControl2, *mut DWORD) -> HRESULT,
+    IsSystemSoundsSession: unsafe extern "system" fn(*mut IAudioSessionControl2) -> HRESULT,
+    SetDuckingPreference: unsafe extern "system" fn(*mut IAudioSessionControl2, BOOL) -> HRESULT,
+}
+
+#[repr(C)]
+#[allow(non_snake_case)]
+struct IAudioSessionControl2 {
+    lpVtbl: *const IAudioSessionControl2Vtbl,
+}
+
 pub struct ShellAndMediaDetector {
     app_visibility: *mut IAppVisibility,
     device_enumerator: *mut IMMDeviceEnumerator,
@@ -529,6 +647,7 @@ pub struct ShellAndMediaDetector {
     last_audio_poll_tick: u64,
     pub last_render_peak: f32,
     pub last_capture_peak: f32,
+    pub active_mic_session: bool,
     pub sustained_audio_secs: f32,
 }
 
@@ -562,6 +681,7 @@ impl ShellAndMediaDetector {
                 last_audio_poll_tick: 0,
                 last_render_peak: 0.0,
                 last_capture_peak: 0.0,
+                active_mic_session: false,
                 sustained_audio_secs: 0.0,
             }
         }
@@ -606,22 +726,33 @@ impl ShellAndMediaDetector {
         }
     }
 
-    /// Polls CoreAudio microphone capture meter (throttled to 10Hz).
+    /// Polls all active Windows CoreAudio microphone capture endpoints (`eCapture`) at 5Hz.
     /// Audio output (`eRender`) is intentionally ignored so background music, videos, or game audio
-    /// NEVER pause or wake the idle timer. Only sustained active microphone speech (`capture > 0.045`
-    /// for >= 2.0s) pauses the pre-idle timer when `pause_on_media_or_call` is enabled.
+    /// NEVER pause or wake the idle timer.
+    /// Detects whether any application (such as Discord, Zoom, Teams, Slack, etc.) currently has an
+    /// active microphone capture session (`AudioSessionStateActive == 1`) on ANY capture device
+    /// (e.g., Shure MV7, USB headset, webcam mic, regardless of which device is set as default),
+    /// and reads the live microphone peak meter from that active session/device.
     pub fn is_watching_video_or_in_call(&mut self, dt_secs: f32) -> bool {
         unsafe {
             let now = GetTickCount64();
-            if now.saturating_sub(self.last_audio_poll_tick) >= 100 {
+            if now.saturating_sub(self.last_audio_poll_tick) >= 200 {
                 self.last_audio_poll_tick = now;
                 self.last_render_peak = 0.0;
-                self.last_capture_peak = self.get_endpoint_peak(eCapture, eCommunications);
+                let (has_active_session, peak) = self.poll_all_capture_endpoints();
+                self.active_mic_session = has_active_session;
+                self.last_capture_peak = peak;
+            }
+
+            if self.active_mic_session {
+                self.sustained_audio_secs = (self.sustained_audio_secs + dt_secs).min(8.0);
+                self.last_media_active_tick = now;
+                return true;
             }
 
             if self.last_capture_peak > 0.045 {
                 self.sustained_audio_secs = (self.sustained_audio_secs + dt_secs).min(8.0);
-                if self.sustained_audio_secs >= 2.0 {
+                if self.sustained_audio_secs >= 1.5 {
                     self.last_media_active_tick = now;
                     return true;
                 }
@@ -629,15 +760,157 @@ impl ShellAndMediaDetector {
                 self.sustained_audio_secs = (self.sustained_audio_secs - dt_secs * 1.5).max(0.0);
             }
 
-            // Keep call state true for an 8-second grace window after sustained microphone speech
+            // Keep call state true for a 5-second grace window after an active microphone session ends
             if self.last_media_active_tick > 0
-                && now.saturating_sub(self.last_media_active_tick) < 8_000
+                && now.saturating_sub(self.last_media_active_tick) < 5_000
             {
                 return true;
             }
 
             false
         }
+    }
+
+    /// Enumerates all active `eCapture` endpoints and their `IAudioSessionManager2` sessions.
+    /// Returns `(has_active_capture_session, max_capture_peak)`.
+    unsafe fn poll_all_capture_endpoints(&self) -> (bool, f32) {
+        if self.device_enumerator.is_null() {
+            return (false, 0.0);
+        }
+
+        let mut collection: *mut IMMDeviceCollection = ptr::null_mut();
+        let hr = (*self.device_enumerator).EnumAudioEndpoints(
+            eCapture,
+            DEVICE_STATE_ACTIVE,
+            &mut collection,
+        );
+        if hr != S_OK || collection.is_null() {
+            let fallback_peak = self
+                .get_endpoint_peak(eCapture, eCommunications)
+                .max(self.get_endpoint_peak(eCapture, eConsole));
+            return (false, fallback_peak);
+        }
+
+        let mut count: u32 = 0;
+        let _ = (*collection).GetCount(&mut count);
+
+        let mut any_active_session = false;
+        let mut max_peak: f32 = 0.0;
+
+        for i in 0..count {
+            let mut device: *mut IMMDevice = ptr::null_mut();
+            if (*collection).Item(i, &mut device) != S_OK || device.is_null() {
+                continue;
+            }
+
+            let mut device_has_active_session = false;
+            let mut mgr: *mut IAudioSessionManager2 = ptr::null_mut();
+            let hr_mgr = (*device).Activate(
+                &IID_IAUDIO_SESSION_MANAGER2,
+                CLSCTX_ALL,
+                ptr::null_mut(),
+                &mut mgr as *mut *mut _ as *mut LPVOID,
+            );
+
+            if hr_mgr == S_OK && !mgr.is_null() {
+                let mut ses_enum: *mut IAudioSessionEnumerator = ptr::null_mut();
+                if ((*(*mgr).lpVtbl).GetSessionEnumerator)(mgr, &mut ses_enum) == S_OK
+                    && !ses_enum.is_null()
+                {
+                    let mut ses_count: i32 = 0;
+                    let _ = ((*(*ses_enum).lpVtbl).GetCount)(ses_enum, &mut ses_count);
+
+                    for s in 0..ses_count {
+                        let mut ses_ctrl: *mut IAudioSessionControl = ptr::null_mut();
+                        if ((*(*ses_enum).lpVtbl).GetSession)(ses_enum, s, &mut ses_ctrl) == S_OK
+                            && !ses_ctrl.is_null()
+                        {
+                            let mut state: u32 = 0;
+                            let _ = ((*(*ses_ctrl).lpVtbl).GetState)(ses_ctrl, &mut state);
+
+                            // AudioSessionStateActive == 1
+                            if state == 1 {
+                                let mut is_valid_app_session = true;
+                                let mut ses_ctrl2: *mut IAudioSessionControl2 = ptr::null_mut();
+                                if ((*(*ses_ctrl).lpVtbl).parent.QueryInterface)(
+                                    ses_ctrl as *mut IUnknown,
+                                    &IID_IAUDIO_SESSION_CONTROL2,
+                                    &mut ses_ctrl2 as *mut *mut _ as *mut LPVOID,
+                                ) == S_OK
+                                    && !ses_ctrl2.is_null()
+                                {
+                                    let is_sys =
+                                        ((*(*ses_ctrl2).lpVtbl).IsSystemSoundsSession)(ses_ctrl2);
+                                    let mut pid: DWORD = 0;
+                                    let _ =
+                                        ((*(*ses_ctrl2).lpVtbl).GetProcessId)(ses_ctrl2, &mut pid);
+                                    if is_sys == S_OK || pid == 0 {
+                                        is_valid_app_session = false;
+                                    }
+                                    ((*(*ses_ctrl2).lpVtbl).base.parent.Release)(
+                                        ses_ctrl2 as *mut IUnknown,
+                                    );
+                                }
+
+                                if is_valid_app_session {
+                                    any_active_session = true;
+                                    device_has_active_session = true;
+
+                                    let mut ses_meter: *mut IAudioMeterInformation =
+                                        ptr::null_mut();
+                                    if ((*(*ses_ctrl).lpVtbl).parent.QueryInterface)(
+                                        ses_ctrl as *mut IUnknown,
+                                        &IID_IAUDIO_METER_INFORMATION,
+                                        &mut ses_meter as *mut *mut _ as *mut LPVOID,
+                                    ) == S_OK
+                                        && !ses_meter.is_null()
+                                    {
+                                        let mut p: f32 = 0.0;
+                                        if ((*(*ses_meter).lpVtbl).GetPeakValue)(ses_meter, &mut p)
+                                            == S_OK
+                                        {
+                                            max_peak = max_peak.max(p);
+                                        }
+                                        ((*(*ses_meter).lpVtbl).parent.Release)(
+                                            ses_meter as *mut IUnknown,
+                                        );
+                                    }
+                                }
+                            }
+
+                            ((*(*ses_ctrl).lpVtbl).parent.Release)(ses_ctrl as *mut IUnknown);
+                        }
+                    }
+
+                    ((*(*ses_enum).lpVtbl).parent.Release)(ses_enum as *mut IUnknown);
+                }
+
+                ((*(*mgr).lpVtbl).parent.Release)(mgr as *mut IUnknown);
+            }
+
+            if device_has_active_session {
+                let mut dev_meter: *mut IAudioMeterInformation = ptr::null_mut();
+                if (*device).Activate(
+                    &IID_IAUDIO_METER_INFORMATION,
+                    CLSCTX_ALL,
+                    ptr::null_mut(),
+                    &mut dev_meter as *mut *mut _ as *mut LPVOID,
+                ) == S_OK
+                    && !dev_meter.is_null()
+                {
+                    let mut p: f32 = 0.0;
+                    if ((*(*dev_meter).lpVtbl).GetPeakValue)(dev_meter, &mut p) == S_OK {
+                        max_peak = max_peak.max(p);
+                    }
+                    ((*(*dev_meter).lpVtbl).parent.Release)(dev_meter as *mut IUnknown);
+                }
+            }
+
+            (*device).Release();
+        }
+
+        (*collection).Release();
+        (any_active_session, max_peak)
     }
 
     unsafe fn get_endpoint_peak(&self, data_flow: u32, role: u32) -> f32 {

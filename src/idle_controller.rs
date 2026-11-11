@@ -55,6 +55,8 @@ pub struct IdleController {
     last_cursor: POINT,
     idle_anchor_cursor: POINT,
     synthetic_override_active: bool,
+    call_reset_raw_idle_secs: f32,
+    was_paused_by_call: bool,
     was_idle_dimmed: bool,
     was_screensaver_active: bool,
 
@@ -167,6 +169,8 @@ impl IdleController {
                 last_cursor: cur,
                 idle_anchor_cursor: cur,
                 synthetic_override_active: false,
+                call_reset_raw_idle_secs: 0.0,
+                was_paused_by_call: false,
                 was_idle_dimmed: false,
                 was_screensaver_active: false,
                 state_summary: String::from("Monitoring user activity"),
@@ -309,6 +313,9 @@ impl IdleController {
         // Check if OS GetLastInputInfo suddenly reset
         let os_idle_reset = raw_idle_ms + 350 < self.last_raw_idle_ms;
         self.last_raw_idle_ms = raw_idle_ms;
+        if self.raw_idle_secs < self.call_reset_raw_idle_secs {
+            self.call_reset_raw_idle_secs = 0.0;
+        }
 
         if real_input {
             if self.effective_idle_secs >= 10.0 || self.was_idle_dimmed || self.was_screensaver_active {
@@ -334,6 +341,7 @@ impl IdleController {
                 self.record_wake_event(reason);
             }
             self.synthetic_override_active = false;
+            self.call_reset_raw_idle_secs = 0.0;
             self.effective_idle_secs = self.raw_idle_secs;
             self.idle_anchor_cursor = cur;
         } else if os_idle_reset {
@@ -348,40 +356,43 @@ impl IdleController {
                     self.effective_idle_secs, fg_desc
                 ));
             } else {
+                self.call_reset_raw_idle_secs = 0.0;
                 self.effective_idle_secs = self.raw_idle_secs;
                 self.idle_anchor_cursor = cur;
             }
         } else if self.synthetic_override_active {
             self.effective_idle_secs += dt_secs;
         } else {
-            self.effective_idle_secs = self.raw_idle_secs;
+            self.effective_idle_secs = (self.raw_idle_secs - self.call_reset_raw_idle_secs).max(0.0);
             if self.effective_idle_secs < 2.0 {
                 self.idle_anchor_cursor = cur;
             }
         }
 
-        // Poll sustained audio/call activity (always poll so UI meters update live)
+        // Poll sustained audio/call activity across all active capture endpoints (always poll so UI meters update live)
         let sustained_media = detector.is_watching_video_or_in_call(dt_secs);
 
-        // CRITICAL: Only allow media/call audio to pause the idle timer BEFORE idle dim or screensaver engages!
-        // Once the user has walked away and the screen is already dimmed or running the screensaver,
-        // background notification sounds or mic noise can NEVER wake up the screen!
-        let already_in_idle_mode = self.was_idle_dimmed || self.was_screensaver_active;
+        // Allow active microphone calls (e.g., Discord voice channel with mic open) to pause the idle timer
+        // before the screensaver engages!
         let media_or_call_active = cfg.pause_on_media_or_call
             && !preview_screensaver
             && !preview_idle_dim
-            && !already_in_idle_mode
+            && !self.was_screensaver_active
             && sustained_media;
 
         if media_or_call_active {
-            if self.effective_idle_secs >= 10.0 {
+            if !self.was_paused_by_call {
+                self.was_paused_by_call = true;
                 self.record_wake_event(format!(
                     "Timer paused by active mic call (mic={:.2})",
                     detector.last_capture_peak
                 ));
             }
+            self.call_reset_raw_idle_secs = self.raw_idle_secs;
             self.effective_idle_secs = 0.0;
             self.synthetic_override_active = false;
+        } else {
+            self.was_paused_by_call = false;
         }
 
         // Determine if screensaver should be active and how long it has been running
@@ -459,7 +470,7 @@ impl IdleController {
             )
         } else if media_or_call_active {
             format!(
-                "PAUSED BY MIC CALL (Mic: {:.3})",
+                "PAUSED BY ACTIVE MIC CALL (Mic Open | Peak: {:.3})",
                 detector.last_capture_peak
             )
         } else {
