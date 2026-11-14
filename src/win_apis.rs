@@ -726,43 +726,47 @@ impl ShellAndMediaDetector {
         }
     }
 
-    /// Polls all active Windows CoreAudio microphone capture endpoints (`eCapture`) at 5Hz.
+    /// Polls all active Windows CoreAudio microphone capture endpoints (`eCapture`) at 20Hz (50ms).
     /// Audio output (`eRender`) is intentionally ignored so background music, videos, or game audio
     /// NEVER pause or wake the idle timer.
-    /// Detects whether any application (such as Discord, Zoom, Teams, Slack, etc.) currently has an
-    /// active microphone capture session (`AudioSessionStateActive == 1`) on ANY capture device
-    /// (e.g., Shure MV7, USB headset, webcam mic, regardless of which device is set as default),
-    /// and reads the live microphone peak meter from that active session/device.
+    /// Ambient room noise is typically ~0.002; normal conversational speech peaks around 0.010–0.050.
+    /// Any speech above 0.010 immediately resets the pre-idle timer without requiring loud speech.
     pub fn is_watching_video_or_in_call(&mut self, dt_secs: f32) -> bool {
         unsafe {
             let now = GetTickCount64();
-            if now.saturating_sub(self.last_audio_poll_tick) >= 200 {
+            if now.saturating_sub(self.last_audio_poll_tick) >= 50 {
                 self.last_audio_poll_tick = now;
                 self.last_render_peak = 0.0;
                 let (has_active_session, peak) = self.poll_all_capture_endpoints();
                 self.active_mic_session = has_active_session;
-                self.last_capture_peak = peak;
+                // Smooth peak hold so short spoken syllables stay visible in the UI and detector
+                if peak >= self.last_capture_peak {
+                    self.last_capture_peak = peak;
+                } else {
+                    self.last_capture_peak = (self.last_capture_peak * 0.75).max(peak);
+                }
             }
 
-            if self.active_mic_session {
+            // Ambient noise floor is ~0.002. A threshold of 0.010 (1.0%) is 5x above ambient noise
+            // while easily catching normal, quiet conversational speech (0.010 - 0.050) on the first word.
+            if self.last_capture_peak >= 0.015 {
                 self.sustained_audio_secs = (self.sustained_audio_secs + dt_secs).min(8.0);
                 self.last_media_active_tick = now;
                 return true;
-            }
-
-            if self.last_capture_peak > 0.045 {
+            } else if self.last_capture_peak >= 0.008 {
                 self.sustained_audio_secs = (self.sustained_audio_secs + dt_secs).min(8.0);
-                if self.sustained_audio_secs >= 1.5 {
+                if self.sustained_audio_secs >= 0.15 {
                     self.last_media_active_tick = now;
                     return true;
                 }
             } else {
-                self.sustained_audio_secs = (self.sustained_audio_secs - dt_secs * 1.5).max(0.0);
+                // Decay slowly (0.25x) so natural pauses between words don't reset speech accumulation
+                self.sustained_audio_secs = (self.sustained_audio_secs - dt_secs * 0.25).max(0.0);
             }
 
-            // Keep call state true for a 5-second grace window after an active microphone session ends
+            // Keep call state true for a 10-second grace window after speaking
             if self.last_media_active_tick > 0
-                && now.saturating_sub(self.last_media_active_tick) < 5_000
+                && now.saturating_sub(self.last_media_active_tick) < 10_000
             {
                 return true;
             }
@@ -771,12 +775,17 @@ impl ShellAndMediaDetector {
         }
     }
 
-    /// Enumerates all active `eCapture` endpoints and their `IAudioSessionManager2` sessions.
+    /// Enumerates all active `eCapture` endpoints and their `IAudioSessionManager2` sessions,
+    /// combined with the default `eCommunications` and `eConsole` capture endpoints.
     /// Returns `(has_active_capture_session, max_capture_peak)`.
     unsafe fn poll_all_capture_endpoints(&self) -> (bool, f32) {
         if self.device_enumerator.is_null() {
             return (false, 0.0);
         }
+
+        let default_peak = self
+            .get_endpoint_peak(eCapture, eCommunications)
+            .max(self.get_endpoint_peak(eCapture, eConsole));
 
         let mut collection: *mut IMMDeviceCollection = ptr::null_mut();
         let hr = (*self.device_enumerator).EnumAudioEndpoints(
@@ -785,17 +794,14 @@ impl ShellAndMediaDetector {
             &mut collection,
         );
         if hr != S_OK || collection.is_null() {
-            let fallback_peak = self
-                .get_endpoint_peak(eCapture, eCommunications)
-                .max(self.get_endpoint_peak(eCapture, eConsole));
-            return (false, fallback_peak);
+            return (false, default_peak);
         }
 
         let mut count: u32 = 0;
         let _ = (*collection).GetCount(&mut count);
 
         let mut any_active_session = false;
-        let mut max_peak: f32 = 0.0;
+        let mut max_peak: f32 = default_peak;
 
         for i in 0..count {
             let mut device: *mut IMMDevice = ptr::null_mut();
